@@ -45,6 +45,11 @@ data Args
   }
  deriving ( Show, Read )
 
+-- | Callbacks to hook into certain states of the test procedure with custom functions
+data Hooks = Hooks 
+    { preTestHook     :: IO ()              -- ^ Execute this right before a test
+    , postTestHook    :: IO ()              -- ^ Execute this right after a test
+    }
 
 
 
@@ -61,7 +66,14 @@ stdArgs = Args
   , maxDiscardRatio = 10
   , maxSize         = 100
   , chatty          = True
+  , keepGoing       = False
 -- noShrinking flag?
+  }
+
+stdHooks :: Hooks
+stdHooks = Hooks 
+  { preTestHook     = return ()
+  , postTestHook    = return ()
   }
 
 -- | Tests a property and prints the results to 'stdout'.
@@ -78,26 +90,30 @@ quickCheckResult p = quickCheckWithResult stdArgs p
 
 -- | Tests a property, using test arguments, produces a test result, and prints the results to 'stdout'.
 quickCheckWithResult :: Testable prop => Args -> prop -> IO Result
-quickCheckWithResult a p = (if chatty a then withStdioTerminal else withNullTerminal) $ \tm -> do
+quickCheckWithResult a p = quickCheckWithHooks a stdHooks p
+
+-- | Tests a property, using test arguments and callback hooks, produces a test result, and prints the results to 'stdout'.
+quickCheckWithHooks :: Testable prop => Args -> Hooks -> prop -> IO Result
+quickCheckWithHooks a hooks p = (if chatty a then withStdioTerminal else withNullTerminal) $ \tm -> do
      rnd <- case replay a of
               Nothing      -> newQCGen
               Just (rnd,_) -> return rnd
-     test MkState{ terminal                  = tm
-                 , maxSuccessTests           = maxSuccess a
-                 , maxDiscardedTests         = maxDiscardRatio a * maxSuccess a
-                 , computeSize               = case replay a of
-                                                 Nothing    -> computeSize'
-                                                 Just (_,s) -> computeSize' `at0` s
-                 , numSuccessTests           = 0
-                 , numDiscardedTests         = 0
-                 , numRecentlyDiscardedTests = 0
-                 , collected                 = []
-                 , expectedFailure           = False
-                 , randomSeed                = rnd
-                 , numSuccessShrinks         = 0
-                 , numTryShrinks             = 0
-                 , numTotTryShrinks          = 0
-                 } (unGen (unProperty (property' p)))
+     test a hooks MkState{ terminal                  = tm
+                         , maxSuccessTests           = maxSuccess a
+                         , maxDiscardedTests         = maxDiscardRatio a * maxSuccess a
+                         , computeSize               = case replay a of
+                                                         Nothing    -> computeSize'
+                                                         Just (_,s) -> computeSize' `at0` s
+                         , numSuccessTests           = 0
+                         , numDiscardedTests         = 0
+                         , numRecentlyDiscardedTests = 0
+                         , collected                 = []
+                         , expectedFailure           = False
+                         , randomSeed                = rnd
+                         , numSuccessShrinks         = 0
+                         , numTryShrinks             = 0
+                         , numTotTryShrinks          = 0
+                         } (unGen (unProperty (property' p)))
   where computeSize' n d
           -- e.g. with maxSuccess = 250, maxSize = 100, goes like this:
           -- 0, 1, 2, ..., 99, 0, 1, 2, ..., 99, 0, 2, 4, ..., 98.
@@ -136,11 +152,11 @@ verboseCheckWithResult a p = quickCheckWithResult a (verbose p)
 --------------------------------------------------------------------------
 -- main test loop
 
-test :: State -> (QCGen -> Int -> Prop) -> IO Result
-test st f
+test :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
+test args hooks st f
   | numSuccessTests st   >= maxSuccessTests st   = doneTesting st f
   | numDiscardedTests st >= maxDiscardedTests st = giveUp st f
-  | otherwise                                    = runATest st f
+  | otherwise                                    = runATest args hooks st f
 
 doneTesting :: State -> (QCGen -> Int -> Prop) -> IO Result
 doneTesting st _f =
@@ -185,8 +201,8 @@ giveUp st _f =
                   , output   = theOutput
                   }
 
-runATest :: State -> (QCGen -> Int -> Prop) -> IO Result
-runATest st f =
+runATest :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
+runATest args hooks st f =
   do -- CALLBACK before_test
      putTemp (terminal st)
         ( "("
@@ -201,7 +217,7 @@ runATest st f =
      callbackPostTest st res
 
      let continue break st' | abort res = break st'
-                            | otherwise = test st'
+                            | otherwise = test args hooks st'
          cons [] xs = xs
          cons x  xs = x:xs
 
