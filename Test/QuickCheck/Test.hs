@@ -113,6 +113,7 @@ quickCheckWithHooks a hooks p = (if chatty a then withStdioTerminal else withNul
                          , numSuccessShrinks         = 0
                          , numTryShrinks             = 0
                          , numTotTryShrinks          = 0
+                         , finalResult               = Nothing
                          } (unGen (unProperty (property' p)))
   where computeSize' n d
           -- e.g. with maxSuccess = 250, maxSize = 100, goes like this:

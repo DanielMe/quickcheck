@@ -30,6 +30,7 @@ data State
   , numSuccessShrinks         :: Int               -- ^ number of successful shrinking steps so far
   , numTryShrinks             :: Int               -- ^ number of failed shrinking steps since the last successful shrink
   , numTotTryShrinks          :: Int               -- ^ total number of failed shrinking steps
+  , finalResult               :: Maybe Result
   }
 
 --------------------------------------------------------------------------
