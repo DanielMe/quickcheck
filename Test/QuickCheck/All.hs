@@ -21,6 +21,7 @@ import Test.QuickCheck.Test
 import Data.Char
 import Data.List
 import Control.Monad
+import Test.QuickCheck.Result
 
 import qualified System.IO as S
 

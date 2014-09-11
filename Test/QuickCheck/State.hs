@@ -3,7 +3,7 @@ module Test.QuickCheck.State where
 
 import Test.QuickCheck.Text
 import Test.QuickCheck.Random
-
+import Test.QuickCheck.Result
 --------------------------------------------------------------------------
 -- State
 

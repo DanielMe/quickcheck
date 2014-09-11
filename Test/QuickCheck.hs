@@ -216,6 +216,7 @@ import Test.QuickCheck.Property hiding ( Result(..) )
 import Test.QuickCheck.Test
 import Test.QuickCheck.Text
 import Test.QuickCheck.Exception
+import Test.QuickCheck.Result
 #ifndef NO_TEMPLATE_HASKELL
 import Test.QuickCheck.All
 #endif
