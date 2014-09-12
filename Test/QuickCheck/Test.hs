@@ -47,8 +47,8 @@ data Args
 
 -- | Callbacks to hook into certain states of the test procedure with custom functions
 data Hooks = Hooks 
-    { preTestHook     :: IO ()              -- ^ Execute this right before a test
-    , postTestHook    :: IO ()              -- ^ Execute this right after a test
+    { preTestHook     :: State -> IO ()              -- ^ Execute this right before a test
+    , postTestHook    :: State -> P.Result -> IO ()              -- ^ Execute this right after a test
     }
 
 
@@ -72,8 +72,8 @@ stdArgs = Args
 
 stdHooks :: Hooks
 stdHooks = Hooks 
-  { preTestHook     = return ()
-  , postTestHook    = return ()
+  { preTestHook = const $ return ()
+  , postTestHook = const $ const $ return ()
   }
 
 -- | Tests a property and prints the results to 'stdout'.
@@ -214,8 +214,9 @@ runATest args hooks st f =
        ++ ")"
         )
      let size = computeSize st (numSuccessTests st) (numRecentlyDiscardedTests st)
+     callbackPreTest hooks st
      MkRose res ts <- protectRose (reduceRose (unProp (f rnd1 size)))
-     callbackPostTest st res
+     callbackPostTest hooks st res
 
      let continue break st' | abort res = break st'
                             | otherwise = test args hooks st'
@@ -244,7 +245,7 @@ runATest args hooks st f =
          do if expect res
               then putPart (terminal st) (bold "*** Failed! ")
               else putPart (terminal st) "+++ OK, failed as expected. "
-            (numShrinks, totFailed, lastFailed) <- foundFailure st res ts
+            (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
             theOutput <- terminalOutput (terminal st)
             if not (expect res) then
               return Success{ labels = summary st,
@@ -324,14 +325,14 @@ success st =
 --------------------------------------------------------------------------
 -- main shrinking loop
 
-foundFailure :: State -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
-foundFailure st res ts =
-  do localMin st{ numTryShrinks = 0 } res res ts
+foundFailure :: Hooks -> State -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
+foundFailure hooks st res ts =
+  do localMin hooks st{ numTryShrinks = 0 } res res ts
 
-localMin :: State -> P.Result -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
-localMin st MkResult{P.theException = Just e} lastRes _
+localMin :: Hooks -> State -> P.Result -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
+localMin hooks st MkResult{P.theException = Just e} lastRes _
   | isInterrupt e = localMinFound st lastRes
-localMin st res _ ts = do
+localMin hooks st res _ ts = do
   putTemp (terminal st)
     ( short 26 (oneLine (P.reason res))
    ++ " (after " ++ number (numSuccessTests st+1) "test"
@@ -351,18 +352,19 @@ localMin st res _ ts = do
     Left err ->
       localMinFound st
          (exception "Exception while generating shrink-list" err) { callbacks = callbacks res }
-    Right ts' -> localMin' st res ts'
+    Right ts' -> localMin' hooks st res ts'
 
-localMin' :: State -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
-localMin' st res [] = localMinFound st res
-localMin' st res (t:ts) =
+localMin' :: Hooks -> State -> P.Result -> [Rose P.Result] -> IO (Int, Int, Int)
+localMin' _ st res [] = localMinFound st res
+localMin' hooks st res (t:ts) =
   do -- CALLBACK before_test
+    callbackPreTest hooks st
     MkRose res' ts' <- protectRose (reduceRose t)
-    callbackPostTest st res'
+    callbackPostTest hooks st res'
     if ok res' == Just False
-      then localMin st{ numSuccessShrinks = numSuccessShrinks st + 1,
+      then localMin hooks st{ numSuccessShrinks = numSuccessShrinks st + 1,
                         numTryShrinks     = 0 } res' res ts'
-      else localMin st{ numTryShrinks    = numTryShrinks st + 1,
+      else localMin hooks st{ numTryShrinks    = numTryShrinks st + 1,
                         numTotTryShrinks = numTotTryShrinks st + 1 } res res ts
 
 localMinFound :: State -> P.Result -> IO (Int, Int, Int)
@@ -388,9 +390,16 @@ localMinFound st res =
 --------------------------------------------------------------------------
 -- callbacks
 
-callbackPostTest :: State -> P.Result -> IO ()
-callbackPostTest st res =
+callbackPostTest :: Hooks -> State -> P.Result -> IO ()
+callbackPostTest hooks st res = do
+  let hook = postTestHook hooks
+  safely st (hook st res)
   sequence_ [ safely st (f st res) | PostTest _ f <- callbacks res ]
+
+callbackPreTest :: Hooks -> State -> IO ()
+callbackPreTest hooks st =
+    let hook = preTestHook hooks
+    in  safely st (hook st)
 
 callbackPostFinalFailure :: State -> P.Result -> IO ()
 callbackPostFinalFailure st res =
