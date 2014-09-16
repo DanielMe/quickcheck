@@ -17,6 +17,9 @@ import Trace.Hpc.Reflect
 data Trace = Trace String
 
 
+quickCheckWithHints :: Testable prop => prop -> IO ()
+quickCheckWithHints p = quickCheckWithTrace stdArgs p >> return ()
+
 quickCheckWithTrace :: Testable prop => Args -> prop -> IO (Result, Trace)
 quickCheckWithTrace args p = do
   let args' = args { keepGoing = True }

@@ -142,7 +142,7 @@ Test-Suite test-quickcheck
     type: exitcode-stdio-1.0
     hs-source-dirs:
         examples
-    main-is: Heap.hs
+    main-is: TestWithHints.hs
     build-depends:
       base,
       QuickCheck == 2.7.6,

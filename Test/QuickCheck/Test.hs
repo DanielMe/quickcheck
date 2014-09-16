@@ -202,6 +202,80 @@ giveUp st _f =
                   , output   = theOutput
                   }
 
+logFailure :: P.Result -> State -> IO ()
+
+failTestrun :: P.Result -> State -> IO Result
+
+
+type ResultHandler = Args -> Hooks -> P.Result -> State -> (QCGen -> Int -> Prop) -> IO Result
+
+handleSuccessResult :: ResultHandler
+handleSuccessResult args hooks MkResult{stamp = stamp, expect = expect} st f
+    | MkState{abort=True,finalResult=Just res'} <- st = handleResult args hooks res' st{finalResult=Nothing}
+    | abort st   = doneTesting st' f
+    | otherwise  = test args hooks st' f -- continue
+    where
+      st' = st{ numSuccessTests           = numSuccessTests st + 1
+              , numRecentlyDiscardedTests = 0
+              , randomSeed                = nextSeed st
+              , collected                 = stamp : (collected st)
+              , expectedFailure           = expect
+              }
+      
+handleDiscardedResult :: ResultHandler
+handleDiscardedResult args hooks MkResult{expect = expect} st f
+    | abort st  = giveUp st' f
+    | otherwise = test args hooks st' f --continue
+    where
+      st' = st{ numDiscardedTests         = numDiscardedTests st + 1
+              , numRecentlyDiscardedTests = numRecentlyDiscardedTests st + 1
+              , randomSeed                = nextSeed st
+              , expectedFailure           = expect
+              } f
+
+handleFailedResult :: ResultHandler
+handleFailedResult args hooks MkResult{stamp = stamp, expect = expect} st f
+    | (keepGoing st) && (not $ abort st) = do putPart (terminal st) (bold "*** Failure detected! ... keep going! ")
+                                           res <- failureResult
+                                           test args hooks (nextState res) f
+    | MkState{abort=True,finalResult=Just res'} <- st = handleResult args hooks res' st{finalResult=Nothing}
+    | expect = do putPart (terminal st) (bold "*** Failed! ")
+                  failureResult
+    | (not expect) = do putPart (terminal st) "+++ OK, failed as expected. "
+                      failureResult
+    where 
+      failureResult  
+          | not expected = do (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
+                            theOutput <- terminalOutput (terminal st)
+                            return Failure{ usedSeed = randomSeed st -- correct! (this will be split first)
+                                          , usedSize       = size
+                                          , numTests       = numSuccessTests st+1
+                                          , numShrinks     = numShrinks
+                                          , numShrinkTries = totFailed
+                                          , numShrinkFinal = lastFailed
+                                          , output         = theOutput
+                                          , reason         = P.reason res
+                                          , theException   = P.theException res
+                                          , labels         = summary st
+                                          }
+          | otherwise = do (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
+                           theOutput <- terminalOutput (terminal st)
+                           return Success{ labels = summary st,
+                                           numTests = numSuccessTests st+1,
+                                           output = theOutput }
+      nextState res = st{ numSuccessTests           = numSuccessTests st + 1
+                        , numRecentlyDiscardedTests = 0
+                        , randomSeed                = nextSeed st
+                        , collected                 = stamp : (collected st)
+                        , expectedFailure           = expect
+                        , finalResult               = maybe (Just res) Just (finalResult st) 
+                        }
+
+handleResult :: ResultHandler
+handleResult args hooks res@(MkResult{ok = Just True}) = handleSuccessResult args hooks res
+handleResult args hooks res@(MkResult{ok = Nothing}) = handleDiscardedResult args hooks res
+handleResult args hooks res@(MkResult{ok = Just False}) = handleFailedResult args hooks res
+
 runATest :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
 runATest args hooks st f =
   do -- CALLBACK before_test
@@ -217,54 +291,13 @@ runATest args hooks st f =
      callbackPreTest hooks st
      MkRose res ts <- protectRose (reduceRose (unProp (f rnd1 size)))
      callbackPostTest hooks st res
+     handleResult args hooks res st f
 
-     let continue break st' | abort res = break st'
-                            | otherwise = test args hooks st'
-         cons [] xs = xs
-         cons x  xs = x:xs
-
-     case res of
-       MkResult{ok = Just True, stamp = stamp, expect = expect} -> -- successful test
-         do continue doneTesting
-              st{ numSuccessTests           = numSuccessTests st + 1
-                , numRecentlyDiscardedTests = 0
-                , randomSeed                = rnd2
-                , collected                 = stamp `cons` collected st
-                , expectedFailure           = expect
-                } f
-
-       MkResult{ok = Nothing, expect = expect} -> -- discarded test
-         do continue giveUp
-              st{ numDiscardedTests         = numDiscardedTests st + 1
-                , numRecentlyDiscardedTests = numRecentlyDiscardedTests st + 1
-                , randomSeed                = rnd2
-                , expectedFailure           = expect
-                } f
-
-       MkResult{ok = Just False} -> -- failed test
-         do if expect res
-              then putPart (terminal st) (bold "*** Failed! ")
-              else putPart (terminal st) "+++ OK, failed as expected. "
-            (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
-            theOutput <- terminalOutput (terminal st)
-            if not (expect res) then
-              return Success{ labels = summary st,
-                              numTests = numSuccessTests st+1,
-                              output = theOutput }
-             else
-              return Failure{ usedSeed       = randomSeed st -- correct! (this will be split first)
-                            , usedSize       = size
-                            , numTests       = numSuccessTests st+1
-                            , numShrinks     = numShrinks
-                            , numShrinkTries = totFailed
-                            , numShrinkFinal = lastFailed
-                            , output         = theOutput
-                            , reason         = P.reason res
-                            , theException   = P.theException res
-                            , labels         = summary st
-                            }
  where
   (rnd1,rnd2) = split (randomSeed st)
+
+
+nextSeed = snd . split . randomSeed
 
 summary :: State -> [(String,Int)]
 summary st = reverse
@@ -397,7 +430,7 @@ callbackPostTest hooks st res = do
   sequence_ [ safely st (f st res) | PostTest _ f <- callbacks res ]
 
 callbackPreTest :: Hooks -> State -> IO ()
-callbackPreTest hooks st =
+callbackPreTest hooks st = 
     let hook = preTestHook hooks
     in  safely st (hook st)
 
