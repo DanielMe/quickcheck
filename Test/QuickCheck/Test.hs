@@ -202,11 +202,6 @@ giveUp st _f =
                   , output   = theOutput
                   }
 
-logFailure :: P.Result -> State -> IO ()
-
-failTestrun :: P.Result -> State -> IO Result
-
-
 type ResultHandler = Args -> Hooks -> P.Result -> State -> (QCGen -> Int -> Prop) -> IO Result
 
 handleSuccessResult :: ResultHandler
@@ -234,35 +229,41 @@ handleDiscardedResult args hooks MkResult{expect = expect} st f
               } f
 
 handleFailedResult :: ResultHandler
-handleFailedResult args hooks MkResult{stamp = stamp, expect = expect} st f
-    | (keepGoing st) && (not $ abort st) = do putPart (terminal st) (bold "*** Failure detected! ... keep going! ")
-                                           res <- failureResult
-                                           test args hooks (nextState res) f
+handleFailedResult args hooks res@(MkResult{stamp = stamp, expect = expect}) st f
+    | (keepGoing st) && (not $ abort st) = do 
+                                        putPart (terminal st) (bold "*** Failure detected! ... keep going! ")
+                                        res <- failureResult
+                                        test args hooks (nextState res) f
     | MkState{abort=True,finalResult=Just res'} <- st = handleResult args hooks res' st{finalResult=Nothing}
-    | expect = do putPart (terminal st) (bold "*** Failed! ")
-                  failureResult
-    | (not expect) = do putPart (terminal st) "+++ OK, failed as expected. "
-                      failureResult
+    | expect = do 
+               putPart (terminal st) (bold "*** Failed! ")
+               failureResult
+    | (not expect) = do 
+                   putPart (terminal st) "+++ OK, failed as expected. "
+                   failureResult
     where 
       failureResult  
-          | not expected = do (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
-                            theOutput <- terminalOutput (terminal st)
-                            return Failure{ usedSeed = randomSeed st -- correct! (this will be split first)
-                                          , usedSize       = size
-                                          , numTests       = numSuccessTests st+1
-                                          , numShrinks     = numShrinks
-                                          , numShrinkTries = totFailed
-                                          , numShrinkFinal = lastFailed
-                                          , output         = theOutput
-                                          , reason         = P.reason res
-                                          , theException   = P.theException res
-                                          , labels         = summary st
-                                          }
-          | otherwise = do (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
-                           theOutput <- terminalOutput (terminal st)
-                           return Success{ labels = summary st,
-                                           numTests = numSuccessTests st+1,
-                                           output = theOutput }
+          | not expect = do 
+                       (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res st
+                       theOutput <- terminalOutput (terminal st)
+                       return Failure{ usedSeed = randomSeed st -- correct! (this will be split first)
+                                     , usedSize       = size
+                                     , numTests       = numSuccessTests st+1
+                                     , numShrinks     = numShrinks
+                                     , numShrinkTries = totFailed
+                                     , numShrinkFinal = lastFailed
+                                     , output         = theOutput
+                                     , reason         = P.reason res
+                                     , theException   = P.theException res
+                                     , labels         = summary st
+                                     }
+          | otherwise = do 
+                        (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res st
+                        theOutput <- terminalOutput (terminal st)
+                        return Success{ labels = summary st,
+                                        numTests = numSuccessTests st+1,
+                                        output = theOutput }
+
       nextState res = st{ numSuccessTests           = numSuccessTests st + 1
                         , numRecentlyDiscardedTests = 0
                         , randomSeed                = nextSeed st
