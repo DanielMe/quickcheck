@@ -16,6 +16,8 @@ import Test.QuickCheck.State
 import Test.QuickCheck.Exception
 import Test.QuickCheck.Random
 import Test.QuickCheck.Result
+import qualified Test.QuickCheck.ResultInfo as RI
+
 import System.Random(split)
 
 import Data.Char
@@ -155,61 +157,64 @@ verboseCheckWithResult a p = quickCheckWithResult a (verbose p)
 
 test :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
 test args hooks st f
-  | numSuccessTests st   >= maxSuccessTests st   = doneTesting st f
-  | numDiscardedTests st >= maxDiscardedTests st = giveUp st f
+  | numSuccessTests st   >= maxSuccessTests st   = doneTesting (RI.SuccessInfo $ numSuccessTests st) st f -- todo: what if state contains a finalResult?
+  | numDiscardedTests st >= maxDiscardedTests st = doneTesting (RI.GaveUpInfo $ numSuccessTests st) st f -- todo: what if state contains a finalResult?
   | otherwise                                    = runATest args hooks st f
 
-doneTesting :: State -> (QCGen -> Int -> Prop) -> IO Result
-doneTesting st _f =
-  do -- CALLBACK done_testing?
-     if expectedFailure st then
-       putPart (terminal st)
-         ( "+++ OK, passed "
-        ++ show (numSuccessTests st)
-        ++ " tests"
-         )
-      else
-       putPart (terminal st)
-         ( bold ("*** Failed!")
-        ++ " Passed "
-        ++ show (numSuccessTests st)
-        ++ " tests (expected failure)"
-         )
-     success st
-     theOutput <- terminalOutput (terminal st)
-     if expectedFailure st then
-       return Success{ labels = summary st,
-                       numTests = numSuccessTests st,
-                       output = theOutput }
-      else
-       return NoExpectedFailure{ labels = summary st,
-                                 numTests = numSuccessTests st,
-                                 output = theOutput }
+doneTesting :: RI.ResultInfo -> State -> (QCGen -> Int -> Prop) -> IO Result
+doneTesting res st _f = do showMessage
+                           runSuccessHook
+                           theOutput <- terminalOutput (terminal st)
+                           return (result theOutput)
+    where
+      showMessage = case res of
+                      RI.SuccessInfo{} -> showSuccessMessage
+                      RI.FailureInfo{} -> showFailureMessage
+                      RI.GaveUpInfo{} -> showGaveUpMessage
+                      RI.NoExpectedFailureInfo{} -> showNoExpectedFailureMessage
+      showSuccessMessage = putPart (terminal st)("+++ OK, passed " ++ show (numSuccessTests st) ++ " tests")                 
+      showFailureMessage = putPart (terminal st)( bold ("*** Failed!")++ " Passed " ++ show (numSuccessTests st) ++ " tests" )
+      showGaveUpMessage = putPart (terminal st)( bold ("*** Gave up!")++ " Passed only"++ show (numSuccessTests st)++ " tests" )
+      showNoExpectedFailureMessage = putPart (terminal st)( bold ("*** Failed!")++ " Passed "++ show (numSuccessTests st)++ " tests (expected failure)" )
+      runSuccessHook = case res of
+                      RI.SuccessInfo{} -> success st
+                      RI.FailureInfo{} -> return ()
+                      RI.GaveUpInfo{} -> success st
+                      RI.NoExpectedFailureInfo{} -> return ()
+      result theOutput = case res of
+                      (RI.SuccessInfo n) -> Success { labels = summary st,
+                                                     numTests = n,
+                                                     output = theOutput }
+                      (RI.GaveUpInfo n) -> GaveUp { labels = summary st,
+                                                   numTests = n,
+                                                   output = theOutput }
+                      (RI.NoExpectedFailureInfo n) -> NoExpectedFailure { labels = summary st,
+                                                                         numTests = n,
+                                                                         output = theOutput }
+                      (RI.FailureInfo numTests numShrinks numShrinkTries numShrinkFinal usedSeed usedSize reason theException) ->
+                          Failure {labels = summary st,
+                                   output = theOutput,
+                                   numTests = numTests,
+                                   numShrinks = numShrinks,
+                                   numShrinkTries = numShrinkTries,
+                                   numShrinkFinal = numShrinkFinal,
+                                   usedSeed = usedSeed,
+                                   usedSize = usedSize,
+                                   reason = reason,
+                                   theException = theException}
 
-giveUp :: State -> (QCGen -> Int -> Prop) -> IO Result
-giveUp st _f =
-  do -- CALLBACK gave_up?
-     putPart (terminal st)
-       ( bold ("*** Gave up!")
-      ++ " Passed only "
-      ++ show (numSuccessTests st)
-      ++ " tests"
-       )
-     success st
-     theOutput <- terminalOutput (terminal st)
-     return GaveUp{ numTests = numSuccessTests st
-                  , labels   = summary st
-                  , output   = theOutput
-                  }
-
-type ResultHandler = Args -> Hooks -> P.Result -> State -> (QCGen -> Int -> Prop) -> IO Result
+type ResultHandler = Args -> Hooks -> P.Result -> [Rose P.Result] -> State -> (QCGen -> Int -> Prop) -> IO RI.ResultInfo
 
 handleSuccessResult :: ResultHandler
-handleSuccessResult args hooks MkResult{stamp = stamp, expect = expect} st f
-    | MkState{abort=True,finalResult=Just res'} <- st = handleResult args hooks res' st{finalResult=Nothing}
-    | abort st   = doneTesting st' f
+handleSuccessResult args hooks MkResult{abort = abort, stamp = stamp, expect = expect} _ st f
+    | MkState{finalResult=Just resInfo} <- st
+    , abort = return resInfo
+    | abort = return successResult
     | otherwise  = test args hooks st' f -- continue
     where
+      successResult
+       | expect = RI.SuccessInfo $ numSuccessTests st
+       | otherwise = RI.NoExpectedFailureInfo $ numSuccessTests st
       st' = st{ numSuccessTests           = numSuccessTests st + 1
               , numRecentlyDiscardedTests = 0
               , randomSeed                = nextSeed st
@@ -218,59 +223,53 @@ handleSuccessResult args hooks MkResult{stamp = stamp, expect = expect} st f
               }
       
 handleDiscardedResult :: ResultHandler
-handleDiscardedResult args hooks MkResult{expect = expect} st f
-    | abort st  = giveUp st' f
+handleDiscardedResult args hooks MkResult{expect = expect, abort = abort} _ st f
+    | abort     = return $ RI.GaveUpInfo $ numSuccessTests st
     | otherwise = test args hooks st' f --continue
     where
       st' = st{ numDiscardedTests         = numDiscardedTests st + 1
               , numRecentlyDiscardedTests = numRecentlyDiscardedTests st + 1
               , randomSeed                = nextSeed st
               , expectedFailure           = expect
-              } f
+              }
 
 handleFailedResult :: ResultHandler
-handleFailedResult args hooks res@(MkResult{stamp = stamp, expect = expect}) st f
-    | (keepGoing st) && (not $ abort st) = do 
-                                        putPart (terminal st) (bold "*** Failure detected! ... keep going! ")
-                                        res <- failureResult
-                                        test args hooks (nextState res) f
-    | MkState{abort=True,finalResult=Just res'} <- st = handleResult args hooks res' st{finalResult=Nothing}
+handleFailedResult args hooks res@(MkResult{abort = abort, stamp = stamp, expect = expect}) ts st f
+    | (not abort) && (keepGoing args)  = do 
+                                      putPart (terminal st) (bold "*** Failure detected! ... keep going! ")
+                                      res' <- failureResult
+                                      print res'
+                                      test args hooks (nextState res') f
+    | MkState{finalResult=Just res'} <- st
+    , abort  = return res'
     | expect = do 
                putPart (terminal st) (bold "*** Failed! ")
                failureResult
     | (not expect) = do 
                    putPart (terminal st) "+++ OK, failed as expected. "
                    failureResult
-    where 
+    where
+      size           = computeSize st (numSuccessTests st) (numRecentlyDiscardedTests st)
       failureResult  
-          | not expect = do 
-                       (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res st
-                       theOutput <- terminalOutput (terminal st)
-                       return Failure{ usedSeed = randomSeed st -- correct! (this will be split first)
-                                     , usedSize       = size
-                                     , numTests       = numSuccessTests st+1
-                                     , numShrinks     = numShrinks
-                                     , numShrinkTries = totFailed
-                                     , numShrinkFinal = lastFailed
-                                     , output         = theOutput
-                                     , reason         = P.reason res
-                                     , theException   = P.theException res
-                                     , labels         = summary st
-                                     }
-          | otherwise = do 
-                        (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res st
-                        theOutput <- terminalOutput (terminal st)
-                        return Success{ labels = summary st,
-                                        numTests = numSuccessTests st+1,
-                                        output = theOutput }
-
-      nextState res = st{ numSuccessTests           = numSuccessTests st + 1
-                        , numRecentlyDiscardedTests = 0
-                        , randomSeed                = nextSeed st
-                        , collected                 = stamp : (collected st)
-                        , expectedFailure           = expect
-                        , finalResult               = maybe (Just res) Just (finalResult st) 
-                        }
+          | expect = do 
+                     (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
+                     return RI.FailureInfo{ usedSeed = randomSeed st
+                                          , usedSize       = size
+                                          , numTests       = numSuccessTests st+1
+                                          , numShrinks     = numShrinks
+                                          , numShrinkTries = totFailed
+                                          , numShrinkFinal = lastFailed
+                                          , reason         = P.reason res
+                                          , theException   = P.theException res
+                                          }
+          | otherwise = return $ Success $ numSuccessTests st + 1
+      nextState finalRes = st{ numSuccessTests           = numSuccessTests st + 1
+                             , numRecentlyDiscardedTests = 0
+                             , randomSeed                = nextSeed st
+                             , collected                 = stamp : (collected st)
+                             , expectedFailure           = expect
+                             , finalResult               = maybe (Just finalRes) Just (finalResult st) 
+                             }
 
 handleResult :: ResultHandler
 handleResult args hooks res@(MkResult{ok = Just True}) = handleSuccessResult args hooks res
@@ -292,8 +291,8 @@ runATest args hooks st f =
      callbackPreTest hooks st
      MkRose res ts <- protectRose (reduceRose (unProp (f rnd1 size)))
      callbackPostTest hooks st res
-     handleResult args hooks res st f
-
+     resultInfo <- handleResult args hooks res ts st f
+     return $ doneTesting resultInfo
  where
   (rnd1,rnd2) = split (randomSeed st)
 

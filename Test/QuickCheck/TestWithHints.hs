@@ -30,7 +30,8 @@ quickCheckWithTrace args p = do
       postTest :: State -> P.Result -> IO ()
       postTest st res = do
         tix <- examineTix
-        putStrLn (show tix)
+        --putStrLn (show tix)
+        return ()
   res <- quickCheckWithHooks args' hooks p
   return (res, Trace "foo")
         
