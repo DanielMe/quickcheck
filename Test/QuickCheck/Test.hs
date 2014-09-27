@@ -100,23 +100,24 @@ quickCheckWithHooks a hooks p = (if chatty a then withStdioTerminal else withNul
      rnd <- case replay a of
               Nothing      -> newQCGen
               Just (rnd,_) -> return rnd
-     test a hooks MkState{ terminal                  = tm
-                         , maxSuccessTests           = maxSuccess a
-                         , maxDiscardedTests         = maxDiscardRatio a * maxSuccess a
-                         , computeSize               = case replay a of
-                                                         Nothing    -> computeSize'
-                                                         Just (_,s) -> computeSize' `at0` s
-                         , numSuccessTests           = 0
-                         , numDiscardedTests         = 0
-                         , numRecentlyDiscardedTests = 0
-                         , collected                 = []
-                         , expectedFailure           = False
-                         , randomSeed                = rnd
-                         , numSuccessShrinks         = 0
-                         , numTryShrinks             = 0
-                         , numTotTryShrinks          = 0
-                         , finalResult               = Nothing
-                         } (unGen (unProperty (property' p)))
+     (st,resultInfo) <- test a hooks MkState{ terminal                  = tm
+                                           , maxSuccessTests           = maxSuccess a
+                                           , maxDiscardedTests         = maxDiscardRatio a * maxSuccess a
+                                           , computeSize               = case replay a of
+                                                                           Nothing    -> computeSize'
+                                                                           Just (_,s) -> computeSize' `at0` s
+                                           , numSuccessTests           = 0
+                                           , numDiscardedTests         = 0
+                                           , numRecentlyDiscardedTests = 0
+                                           , collected                 = []
+                                           , expectedFailure           = False
+                                           , randomSeed                = rnd
+                                           , numSuccessShrinks         = 0
+                                           , numTryShrinks             = 0
+                                           , numTotTryShrinks          = 0
+                                           , finalResult               = Nothing
+                                           } (unGen (unProperty (property' p)))
+     doneTesting resultInfo st
   where computeSize' n d
           -- e.g. with maxSuccess = 250, maxSize = 100, goes like this:
           -- 0, 1, 2, ..., 99, 0, 1, 2, ..., 99, 0, 2, 4, ..., 98.
@@ -155,17 +156,17 @@ verboseCheckWithResult a p = quickCheckWithResult a (verbose p)
 --------------------------------------------------------------------------
 -- main test loop
 
-test :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
+test :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO (State,RI.ResultInfo)
 test args hooks st f
-  | numSuccessTests st   >= maxSuccessTests st   = doneTesting (RI.SuccessInfo $ numSuccessTests st) st f -- todo: what if state contains a finalResult?
-  | numDiscardedTests st >= maxDiscardedTests st = doneTesting (RI.GaveUpInfo $ numSuccessTests st) st f -- todo: what if state contains a finalResult?
+  | numSuccessTests st   >= maxSuccessTests st   = return (st, maybe (RI.SuccessInfo $ numSuccessTests st) id (finalResult st) )
+  | numDiscardedTests st >= maxDiscardedTests st = return (st, maybe (RI.GaveUpInfo $ numSuccessTests st) id (finalResult st) )
   | otherwise                                    = runATest args hooks st f
 
-doneTesting :: RI.ResultInfo -> State -> (QCGen -> Int -> Prop) -> IO Result
-doneTesting res st _f = do showMessage
-                           runSuccessHook
-                           theOutput <- terminalOutput (terminal st)
-                           return (result theOutput)
+doneTesting :: RI.ResultInfo -> State -> IO Result
+doneTesting res st = do showMessage
+                        runSuccessHook
+                        theOutput <- terminalOutput (terminal st)
+                        return (result theOutput)
     where
       showMessage = case res of
                       RI.SuccessInfo{} -> showSuccessMessage
@@ -203,13 +204,13 @@ doneTesting res st _f = do showMessage
                                    reason = reason,
                                    theException = theException}
 
-type ResultHandler = Args -> Hooks -> P.Result -> [Rose P.Result] -> State -> (QCGen -> Int -> Prop) -> IO RI.ResultInfo
+type ResultHandler = Args -> Hooks -> P.Result -> [Rose P.Result] -> State -> (QCGen -> Int -> Prop) -> IO (State,RI.ResultInfo)
 
 handleSuccessResult :: ResultHandler
 handleSuccessResult args hooks MkResult{abort = abort, stamp = stamp, expect = expect} _ st f
     | MkState{finalResult=Just resInfo} <- st
-    , abort = return resInfo
-    | abort = return successResult
+    , abort = return (st,resInfo)
+    | abort = return (st,successResult)
     | otherwise  = test args hooks st' f -- continue
     where
       successResult
@@ -224,7 +225,7 @@ handleSuccessResult args hooks MkResult{abort = abort, stamp = stamp, expect = e
       
 handleDiscardedResult :: ResultHandler
 handleDiscardedResult args hooks MkResult{expect = expect, abort = abort} _ st f
-    | abort     = return $ RI.GaveUpInfo $ numSuccessTests st
+    | abort     = return $ (st, RI.GaveUpInfo $ numSuccessTests st)
     | otherwise = test args hooks st' f --continue
     where
       st' = st{ numDiscardedTests         = numDiscardedTests st + 1
@@ -241,28 +242,30 @@ handleFailedResult args hooks res@(MkResult{abort = abort, stamp = stamp, expect
                                       print res'
                                       test args hooks (nextState res') f
     | MkState{finalResult=Just res'} <- st
-    , abort  = return res'
+    , abort  = return (st,res')
     | expect = do 
                putPart (terminal st) (bold "*** Failed! ")
-               failureResult
+               res' <- failureResult
+               return (st, res')
     | (not expect) = do 
                    putPart (terminal st) "+++ OK, failed as expected. "
-                   failureResult
+                   res' <- failureResult
+                   return (st, res')
     where
       size           = computeSize st (numSuccessTests st) (numRecentlyDiscardedTests st)
       failureResult  
           | expect = do 
                      (numShrinks, totFailed, lastFailed) <- foundFailure hooks st res ts
-                     return RI.FailureInfo{ usedSeed = randomSeed st
-                                          , usedSize       = size
-                                          , numTests       = numSuccessTests st+1
-                                          , numShrinks     = numShrinks
-                                          , numShrinkTries = totFailed
-                                          , numShrinkFinal = lastFailed
-                                          , reason         = P.reason res
-                                          , theException   = P.theException res
+                     return RI.FailureInfo{ RI.usedSeed = randomSeed st
+                                          , RI.usedSize       = size
+                                          , RI.numTests       = numSuccessTests st+1
+                                          , RI.numShrinks     = numShrinks
+                                          , RI.numShrinkTries = totFailed
+                                          , RI.numShrinkFinal = lastFailed
+                                          , RI.reason         = P.reason res
+                                          , RI.theException   = P.theException res
                                           }
-          | otherwise = return $ Success $ numSuccessTests st + 1
+          | otherwise = return $ RI.SuccessInfo $ numSuccessTests st + 1
       nextState finalRes = st{ numSuccessTests           = numSuccessTests st + 1
                              , numRecentlyDiscardedTests = 0
                              , randomSeed                = nextSeed st
@@ -276,7 +279,7 @@ handleResult args hooks res@(MkResult{ok = Just True}) = handleSuccessResult arg
 handleResult args hooks res@(MkResult{ok = Nothing}) = handleDiscardedResult args hooks res
 handleResult args hooks res@(MkResult{ok = Just False}) = handleFailedResult args hooks res
 
-runATest :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO Result
+runATest :: Args -> Hooks -> State -> (QCGen -> Int -> Prop) -> IO (State, RI.ResultInfo)
 runATest args hooks st f =
   do -- CALLBACK before_test
      putTemp (terminal st)
@@ -291,8 +294,8 @@ runATest args hooks st f =
      callbackPreTest hooks st
      MkRose res ts <- protectRose (reduceRose (unProp (f rnd1 size)))
      callbackPostTest hooks st res
-     resultInfo <- handleResult args hooks res ts st f
-     return $ doneTesting resultInfo
+     (finalState, resultInfo) <- handleResult args hooks res ts st f
+     return (finalState, resultInfo)
  where
   (rnd1,rnd2) = split (randomSeed st)
 

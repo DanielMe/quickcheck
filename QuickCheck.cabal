@@ -70,8 +70,8 @@ library
     Test.QuickCheck.State,
     Test.QuickCheck.Random,
     Test.QuickCheck.Exception,
-    Test.QuickCheck.Result
-
+    Test.QuickCheck.Result,
+    Test.QuickCheck.ResultInfo
   -- GHC-specific modules.
   if impl(ghc)
     Exposed-Modules: 
