@@ -14,5 +14,4 @@ prop_id :: Int -> Bool
 prop_id x = (id x) /= x
 
 main = do
-       quickCheck prop_id
---  quickCheckWithHints prop_factorsDivideProduct
+       quickCheckWithHints prop_factorsDivideProduct

@@ -257,7 +257,7 @@ handleFailedResult args hooks res@(MkResult{abort = abort, stamp = stamp, expect
                   res' <- failureResult
                   return $ maybeSetResult st res'
     where
-      size = computeSize st (numSuccessTests st) (numRecentlyDiscardedTests st)
+      size = computeSize st (numSuccessTests st + numFailedTests st) (numRecentlyDiscardedTests st)
       failureResult  
           | expect = do 
                      putPart (terminal st) (bold "*** Failure detected! ")
@@ -298,7 +298,7 @@ runATest args hooks st f =
                  ]
        ++ ")"
         )
-     let size = computeSize st (numSuccessTests st) (numRecentlyDiscardedTests st)
+     let size = computeSize st (numSuccessTests st + numFailedTests st) (numRecentlyDiscardedTests st)
      callbackPreTest hooks st
      MkRose res ts <- protectRose (reduceRose (unProp (f rnd1 size)))
      callbackPostTest hooks st res
