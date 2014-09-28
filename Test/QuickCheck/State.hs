@@ -15,12 +15,14 @@ data State
   -- static
   { terminal                  :: Terminal          -- ^ the current terminal
   , maxSuccessTests           :: Int               -- ^ maximum number of successful tests needed
+  , maxFailedTests            :: Int               -- ^ maximum number of tests taht can fail (only useful if "keepGoing" is active)
   , maxDiscardedTests         :: Int               -- ^ maximum number of tests that can be discarded
   , computeSize               :: Int -> Int -> Int -- ^ how to compute the size of test cases from
                                                    -- #tests and #discarded tests
 
                                                    -- dynamic
   , numSuccessTests           :: Int               -- ^ the current number of tests that have succeeded
+  , numFailedTests            :: Int               -- ^ the current number of tests that have failed
   , numDiscardedTests         :: Int               -- ^ the current number of discarded tests
   , numRecentlyDiscardedTests :: Int               -- ^ the number of discarded tests since the last successful test
   , collected                 :: [[(String,Int)]]  -- ^ all labels that have been collected so far

@@ -10,6 +10,9 @@ divisibleBy x y = x `mod` y == 0
 
 prop_factorsDivideProduct a b = (a*b) `divisibleBy` a
 
+prop_id :: Int -> Bool
+prop_id x = (id x) /= x
 
 main = do
-  quickCheckWithHints prop_factorsDivideProduct
+       quickCheck prop_id
+--  quickCheckWithHints prop_factorsDivideProduct
