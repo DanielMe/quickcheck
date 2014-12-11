@@ -47,6 +47,7 @@ flag templateHaskell
 
 library
   -- Choose which library versions to use.
+  Build-depends: bytestring >= 0.10.4
   if flag(base4)
     Build-depends: base >= 4 && < 5, random
   else
@@ -146,4 +147,5 @@ Test-Suite test-quickcheck
     build-depends:
       base,
       QuickCheck == 2.7.6,
-      template-haskell >= 2.4
+      template-haskell >= 2.4,
+      random

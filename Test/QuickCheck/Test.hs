@@ -251,7 +251,6 @@ handleFailedResult args hooks res@(MkResult{abort = abort, stamp = stamp, expect
     | (not abort) && (keepGoing args)  = do 
                                       res' <- failureResult
                                       putPart (terminal st) (bold "*** ... keep going! ")
-                                      print res'
                                       test args hooks (nextState res') f
     | otherwise = do 
                   res' <- failureResult
